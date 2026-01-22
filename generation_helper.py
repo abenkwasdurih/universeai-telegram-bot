@@ -19,10 +19,21 @@ MODEL_ENDPOINTS = {
     'kling-v2-5-pro': {'endpoint': '/image-to-video/kling-v2-5-pro', 'param': 'duration'},
     'kling-v2-6-pro': {'endpoint': '/image-to-video/kling-v2-6-pro', 'param': 'duration'},
     'kling-o1-std': {'endpoint': '/image-to-video/kling-o1-std', 'param': 'duration'},
+    'kling-o1-std-video-ref': {'endpoint': '/image-to-video/kling-o1-std-video-ref', 'param': 'duration'},
+    'wan-v2-2-720p': {'endpoint': '/image-to-video/wan-v2-2-720p', 'param': 'duration', 'requiresHttps': True},
+    'wan-v2-6-720p': {'endpoint': '/image-to-video/wan-v2-6-720p', 'param': 'duration', 'requiresHttps': True},
     'wan-v2-6-1080p': {'endpoint': '/image-to-video/wan-v2-6-1080p', 'param': 'duration', 'requiresHttps': True},
+    'minimax-hailuo-02-768p': {'endpoint': '/image-to-video/minimax-hailuo-02-768p', 'param': 'duration'},
     'minimax-hailuo-02-1080p': {'endpoint': '/image-to-video/minimax-hailuo-02-1080p', 'param': 'duration'},
+    'minimax-hailuo-2-3-1080p': {'endpoint': '/image-to-video/minimax-hailuo-2-3-1080p', 'param': 'duration'},
     'runway-gen4-turbo': {'endpoint': '/image-to-video/runway-gen4-turbo', 'param': 'duration', 'requiresHttps': True},
     'pixverse-v5-720p': {'endpoint': '/image-to-video/pixverse-v5', 'param': 'duration', 'requiresHttps': True},
+    'seedance-pro-720p': {'endpoint': '/image-to-video/seedance-pro-720p', 'param': 'duration'},
+    'seedance-pro-1080p': {'endpoint': '/image-to-video/seedance-pro-1080p', 'param': 'duration'},
+    'seedance-lite-720p': {'endpoint': '/image-to-video/seedance-lite-720p', 'param': 'duration'},
+    'seedance-lite-1080p': {'endpoint': '/image-to-video/seedance-lite-1080p', 'param': 'duration'},
+    'kling-v1-6-pro': {'endpoint': '/image-to-video/kling-v1-6-pro', 'param': 'duration'},
+    'kling-v1-6-std': {'endpoint': '/image-to-video/kling-v1-6-std', 'param': 'duration'},
 }
 
 MODEL_STATUS_ENDPOINTS = {
@@ -31,10 +42,21 @@ MODEL_STATUS_ENDPOINTS = {
     'kling-v2-5-pro': '/image-to-video/kling-v2-5-pro',
     'kling-v2-6-pro': '/image-to-video/kling-v2-6',
     'kling-o1-std': '/image-to-video/kling-o1',
+    'kling-o1-std-video-ref': '/image-to-video/kling-o1',
+    'wan-v2-2-720p': '/image-to-video/wan-v2-2-720p',
+    'wan-v2-6-720p': '/image-to-video/wan-v2-6-720p',
     'wan-v2-6-1080p': '/image-to-video/wan-v2-6-1080p',
+    'minimax-hailuo-02-768p': '/image-to-video/minimax-hailuo-02-768p',
     'minimax-hailuo-02-1080p': '/image-to-video/minimax-hailuo-02-1080p',
+    'minimax-hailuo-2-3-1080p': '/image-to-video/minimax-hailuo-2-3-1080p',
     'runway-gen4-turbo': '/image-to-video/runway-gen4-turbo',
     'pixverse-v5-720p': '/image-to-video/pixverse-v5',
+    'seedance-pro-720p': '/image-to-video/seedance-pro-720p',
+    'seedance-pro-1080p': '/image-to-video/seedance-pro-1080p',
+    'seedance-lite-720p': '/image-to-video/seedance-lite-720p',
+    'seedance-lite-1080p': '/image-to-video/seedance-lite-1080p',
+    'kling-v1-6-pro': '/image-to-video/kling-v1-6-pro',
+    'kling-v1-6-std': '/image-to-video/kling-v1-6-std',
 }
 
 def get_api_keys_for_user(user):
@@ -138,6 +160,7 @@ def process_generation(user, model_id, prompt, image_url, duration="5"):
     log_res = supabase.table("generations").insert(gen_data).execute()
     generation_id = log_res.data[0]['id'] if log_res.data else None
     
+    print(f"DEBUG: Processing generation for {user.get('code')} using {model_id}")
     return task_id, generation_id, used_key
 
 def poll_status(task_id, model_id, api_key):
