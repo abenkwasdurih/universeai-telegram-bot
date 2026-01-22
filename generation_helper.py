@@ -128,6 +128,7 @@ def process_generation(user, model_id, prompt, image_url, duration="5"):
     task_id = None
     used_key = None
     
+    last_error = "Unknown error"
     for key in keys:
         try:
             res = requests.post(f"{FREEPIK_API_BASE}{model_config['endpoint']}", json=payload, headers={
@@ -140,11 +141,15 @@ def process_generation(user, model_id, prompt, image_url, duration="5"):
             if task_id:
                 used_key = key
                 break
+            else:
+                last_error = data.get("message") or data.get("error") or str(data)
+                print(f"API key {key[:4]}... failed: {last_error}")
         except Exception as e:
+            last_error = str(e)
             print(f"API Error with key {key[:4]}: {e}")
             continue
             
-    if not task_id: raise Exception("Semua API Key sibuk atau error.")
+    if not task_id: raise Exception(f"Semua API Key sibuk atau error: {last_error}")
     
     # Log Generation
     gen_data = {
