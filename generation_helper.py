@@ -171,6 +171,28 @@ def process_generation(user, model_id, prompt, image_url, duration="5"):
     generation_id = log_res.data[0]['id'] if log_res.data else None
     
     print(f"DEBUG: Processing generation for {user.get('code')} using {model_id}")
+
+    # --- NEW: Insert into tasks table for tracking ---
+    try:
+        task_data = {
+            "user_id": user["id"],
+            "prompt": prompt,
+            "status": "processing",
+            "source": "telegram",
+            "file_url": image_url,
+            "telegram_chat_id": str(user.get("telegram_id", "")),
+            
+            # Requested Defaults
+            "model_name": model_id if model_id else "kling-v1",
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+            "created_at": "now()"
+        }
+        supabase.table("tasks").insert(task_data).execute()
+        print(f"DEBUG: Task inserted into 'tasks' table.")
+    except Exception as e:
+        print(f"⚠️ Failed to insert into tasks table: {e}")
+
     return task_id, generation_id, used_key
 
 def poll_status(task_id, model_id, api_key):
