@@ -1,0 +1,26 @@
+{
+    "name": "universeai-telegram-bot",
+    "version": "1.0.0",
+    "description": "Telegram Bot for universeai.id",
+    "main": "dist/bot.js",
+    "scripts": {
+        "start": "node dist/bot.js",
+        "build": "tsc",
+        "dev": "ts-node src/bot.ts"
+    },
+    "dependencies": {
+        "@aws-sdk/client-s3": "^3.400.0",
+        "@supabase/supabase-js": "^2.39.0",
+        "axios": "^1.6.0",
+        "dotenv": "^16.3.0",
+        "node-fetch": "^3.3.0",
+        "telegraf": "^4.16.3"
+    },
+    "devDependencies": {
+        "@types/axios": "^0.9.36",
+        "@types/node": "^20.19.30",
+        "@types/node-fetch": "^2.6.9",
+        "ts-node": "^10.9.1",
+        "typescript": "^5.3.0"
+    }
+}
