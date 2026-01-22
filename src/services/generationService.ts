@@ -90,8 +90,16 @@ export async function processGeneration(user: User, modelName: string, prompt: s
             usedKey = key;
             break;
         } catch (e: any) {
-            console.error(`API Fail with key ...${key.slice(-4)}:`, e.response?.data || e.message);
-            if ([403, 401, 429, 503].includes(e.response?.status)) {
+            const status = e.response?.status;
+            const errorData = e.response?.data || e.message;
+            console.error(`❌ API Fail with key ...${key.slice(-4)} (Status: ${status}):`, errorData);
+
+            // Log full payload on 404 or 422 for debugging
+            if (status === 404 || status === 422) {
+                console.warn('⚠️ Full Payload sent to Freepik:', JSON.stringify(payload, null, 2));
+            }
+
+            if ([403, 401, 429, 503].includes(status)) {
                 continue;
             }
             throw new Error(`Gagal generate: ${e.response?.data?.error || e.message}`);

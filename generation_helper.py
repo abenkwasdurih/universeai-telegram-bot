@@ -138,15 +138,20 @@ def process_generation(user, model_id, prompt, image_url, duration="5"):
             
             data = res.json()
             task_id = data.get("data", {}).get("task_id") or data.get("task_id")
-            if task_id:
+            
+            if res.status_code == 200 and task_id:
                 used_key = key
                 break
             else:
                 last_error = data.get("message") or data.get("error") or str(data)
-                print(f"API key {key[:4]}... failed: {last_error}")
+                print(f"❌ API result with key {key[:4]}... (Status: {res.status_code}): {last_error}")
+                
+                # Log full payload on 404 or 422 for debugging
+                if res.status_code in [404, 422]:
+                    print(f"⚠️ Full Payload sent to Freepik: {payload}")
         except Exception as e:
             last_error = str(e)
-            print(f"API Error with key {key[:4]}: {e}")
+            print(f"❌ Exception with key {key[:4]}: {e}")
             continue
             
     if not task_id: raise Exception(f"Semua API Key sibuk atau error: {last_error}")
