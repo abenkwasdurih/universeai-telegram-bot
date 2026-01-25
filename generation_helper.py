@@ -32,8 +32,8 @@ MODEL_ENDPOINTS = {
     'seedance-pro-1080p': {'endpoint': '/video/seedance-1-5-pro-1080p', 'param': 'duration'},
     'seedance-lite-720p': {'endpoint': '/video/seedance-1-5-lite-720p', 'param': 'duration'},
     'seedance-lite-1080p': {'endpoint': '/video/seedance-1-5-lite-1080p', 'param': 'duration'},
-    'kling-v1-6-pro': {'endpoint': '/image-to-video/kling-v1-6-pro', 'param': 'duration'},
-    'kling-v1-6-std': {'endpoint': '/image-to-video/kling-v1-6-std', 'param': 'duration'},
+    'kling-v1-6-pro': {'endpoint': '/image-to-video/kling-pro', 'param': 'duration'},
+    'kling-v1-6-std': {'endpoint': '/image-to-video/kling-std', 'param': 'duration'},
 }
 
 MODEL_STATUS_ENDPOINTS = {
@@ -55,8 +55,8 @@ MODEL_STATUS_ENDPOINTS = {
     'seedance-pro-1080p': '/video/seedance-1-5-pro-1080p',
     'seedance-lite-720p': '/video/seedance-1-5-lite-720p',
     'seedance-lite-1080p': '/video/seedance-1-5-lite-1080p',
-    'kling-v1-6-pro': '/image-to-video/kling-v1-6-pro',
-    'kling-v1-6-std': '/image-to-video/kling-v1-6-std',
+    'kling-v1-6-pro': '/image-to-video/kling',
+    'kling-v1-6-std': '/image-to-video/kling',
 }
 
 def get_api_keys_for_user(user):
@@ -66,23 +66,24 @@ def get_api_keys_for_user(user):
     api_keys = []
     group_id = user.get('group_id')
     if group_id:
-        res = supabase.table("api_groups").select("api_keys").eq("id", group_id).single().execute()
+
+        res = supabase.table("api_groups").select("api_keys").eq("id", group_id).limit(1).execute()
         if res.data:
-            api_keys = res.data.get("api_keys", [])
+            api_keys = res.data[0].get("api_keys", [])
     
     if not api_keys:
-        res = supabase.table("api_groups").select("api_keys").eq("name", "default").single().execute()
+        res = supabase.table("api_groups").select("api_keys").eq("name", "default").limit(1).execute()
         if res.data:
-            api_keys = res.data.get("api_keys", [])
+            api_keys = res.data[0].get("api_keys", [])
             
-    return api_keys
+    return [k.split('|')[0].strip() for k in api_keys]
 
 def consume_credits(user_id, amount=1):
-    res = supabase.table("users").select("monthly_credits, extra_credits").eq("id", user_id).single().execute()
+    res = supabase.table("users").select("monthly_credits, extra_credits").eq("id", user_id).limit(1).execute()
     if not res.data: return False
     
-    m_credits = res.data['monthly_credits']
-    e_credits = res.data['extra_credits']
+    m_credits = res.data[0]['monthly_credits']
+    e_credits = res.data[0]['extra_credits']
     
     if (m_credits + e_credits) < amount: return False
     
@@ -101,12 +102,15 @@ def consume_credits(user_id, amount=1):
     return True
 
 def process_generation(user, model_id, prompt, image_url, duration="5"):
+    # Ensure model_name is lowercase as requested
+    model_id = model_id.lower()
+    
     model_config = MODEL_ENDPOINTS.get(model_id)
     if not model_config: raise Exception("Model not found")
     
     # Get Pricing
-    price_res = supabase.table("ai_models").select("credit_cost").eq("model_id", model_id).single().execute()
-    credit_cost = price_res.data['credit_cost'] if price_res.data else 1
+    price_res = supabase.table("ai_models").select("credit_cost").eq("model_id", model_id).limit(1).execute()
+    credit_cost = price_res.data[0]['credit_cost'] if price_res.data else 1
     
     # Check Credits
     if user.get('type') not in ['UNLIMITED', 'ADVANCE']:
@@ -131,7 +135,13 @@ def process_generation(user, model_id, prompt, image_url, duration="5"):
     last_error = "Unknown error"
     for key in keys:
         try:
-            res = requests.post(f"{FREEPIK_API_BASE}{model_config['endpoint']}", json=payload, headers={
+            full_url = f"{FREEPIK_API_BASE}{model_config['endpoint']}"
+            
+            # Request logging
+            print(f"DEBUG: 🚀 Sending Request to: {full_url}")
+            print(f"DEBUG: 📦 Payload: {payload}")
+            
+            res = requests.post(full_url, json=payload, headers={
                 "x-freepik-api-key": key,
                 "Content-Type": "application/json"
             }, timeout=30)
@@ -149,6 +159,8 @@ def process_generation(user, model_id, prompt, image_url, duration="5"):
                 # Log full payload on 404 or 422 for debugging
                 if res.status_code in [404, 422]:
                     print(f"⚠️ Full Payload sent to Freepik: {payload}")
+                    if res.status_code == 404:
+                         print(f"❌ 404 Not Found Body: {res.text}")
         except Exception as e:
             last_error = str(e)
             print(f"❌ Exception with key {key[:4]}: {e}")
@@ -183,7 +195,8 @@ def process_generation(user, model_id, prompt, image_url, duration="5"):
             "telegram_chat_id": str(user.get("telegram_id", "")),
             
             # Requested Defaults
-            "model_name": model_id if model_id else "kling-v1",
+            # Fallback if missing
+            "model_name": model_id if model_id else "kling-v1-6-std",
             "aspect_ratio": "16:9",
             "resolution": "720p",
             "created_at": "now()"
@@ -196,13 +209,17 @@ def process_generation(user, model_id, prompt, image_url, duration="5"):
     return task_id, generation_id, used_key
 
 def poll_status(task_id, model_id, api_key):
+    model_id = model_id.lower() if model_id else model_id
     status_endpoint = MODEL_STATUS_ENDPOINTS.get(model_id, "/image-to-video/kling-v2-1")
     try:
         res = requests.get(f"{FREEPIK_API_BASE}{status_endpoint}/{task_id}", headers={"x-freepik-api-key": api_key}, timeout=20)
+        
         data = res.json().get("data") or res.json()
         status = data.get("status", "").upper()
         
+        print(f"DEBUG: 🔄 [Poll] Task: {task_id[:6]}... | Parse Status: {status}")
         if status in ["COMPLETED", "SUCCESS"]:
+            print(f"DEBUG: ✅ Completed Data: {data}")
             video_url = None
             if data.get("generated"): video_url = data["generated"][0]
             elif data.get("video") and data["video"].get("url"): video_url = data["video"]["url"]
@@ -224,3 +241,64 @@ def finalize_generation(generation_id, video_url, user_id, r2_url=None):
     
     # Increment count
     supabase.rpc("increment_video_count", {"user_id": user_id}).execute()
+
+def submit_freepik_task(user, model_id, prompt, image_url, duration="5"):
+    """
+    Submits a task to Freepik API using available keys.
+    Returns: (task_id, used_key) or raises Exception.
+    Does NOT handle DB logging or credit consumption.
+    """
+    # Ensure model_name is lowercase
+    model_id = model_id.lower()
+    
+    model_config = MODEL_ENDPOINTS.get(model_id)
+    if not model_config: raise Exception(f"Model {model_id} not found")
+
+    # Prepare Payload
+    payload = {"image": image_url, "prompt": prompt}
+    if "wan" in model_id: payload["size"] = "1280*720"
+    if model_config.get('param') == 'duration': payload["duration"] = str(duration)
+    
+    if "pixverse" in model_id:
+        payload = {"image_url": image_url, "prompt": prompt, "resolution": "720p", "duration": int(duration)}
+
+    # Get Keys
+    keys = get_api_keys_for_user(user)
+    if not keys: raise Exception("Bot sedang sibuk (No API Keys)")
+    
+    task_id = None
+    used_key = None
+    last_error = "Unknown error"
+    
+    for key in keys:
+        try:
+            full_url = f"{FREEPIK_API_BASE}{model_config['endpoint']}"
+            
+            # Request logging
+            print(f"DEBUG: 🚀 [Worker] Sending Request to: {full_url}")
+            
+            res = requests.post(full_url, json=payload, headers={
+                "x-freepik-api-key": key,
+                "Content-Type": "application/json"
+            }, timeout=30)
+            
+            data = res.json()
+            task_id = data.get("data", {}).get("task_id") or data.get("task_id")
+            
+            if res.status_code == 200 and task_id:
+                used_key = key
+                break
+            else:
+                last_error = data.get("message") or data.get("error") or str(data)
+                print(f"❌ [Worker] API result with key {key[:4]}... (Status: {res.status_code}): {last_error}")
+                if res.status_code == 429: # Rate limit
+                    continue # Try next key
+                
+        except Exception as e:
+            last_error = str(e)
+            print(f"❌ [Worker] Exception with key {key[:4]}: {e}")
+            continue
+            
+    if not task_id: raise Exception(f"Gagal submi API: {last_error}")
+    
+    return task_id, used_key

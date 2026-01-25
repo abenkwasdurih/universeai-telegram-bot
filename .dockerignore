@@ -1,0 +1,28 @@
+# Security
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Dependencies
+node_modules/
+npm-debug.log
+package-lock.json
+
+# Git
+.git/
+.gitignore
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini

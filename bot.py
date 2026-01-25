@@ -25,7 +25,8 @@ from telegram.ext import (
 )
 from supabase import create_client, Client
 from r2_helper import R2Helper
-from generation_helper import process_generation, poll_status, finalize_generation
+from generation_helper import poll_status, finalize_generation
+from queue_worker import worker_loop
 
 # Load environment variables
 load_dotenv()
@@ -62,7 +63,7 @@ def get_user_by_telegram_id(chat_id):
     return res.data[0] if res.data else None
 
 def get_active_models():
-    res = supabase.table("ai_models").select("model_id, display_name").eq("is_active", True).order("sort_order").execute()
+    res = supabase.table("ai_models").select("model_id, display_name").eq("is_active_telegram", True).order("sort_order").execute()
     return res.data if res.data else []
 
 # --- Handlers ---
@@ -234,33 +235,30 @@ async def handle_media_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE
             await status_msg.edit_text("❌ Gagal mengunggah gambar ke storage.")
             return ConversationHandler.END
 
-        # 2. Call Generation API (Freepik via Helper)
-        await status_msg.edit_text("🤖 Mengirim permintaan ke AI Model...")
-        task_id, gen_id, used_key = process_generation(user, model_id, prompt, image_url, duration)
+        # 2. Insert into Tasks Table (QUEUE SYSTEM)
+        status_msg_text = "⏳ **Antrian...**\nPermintaan Anda sedang dalam antrian."
+        await status_msg.edit_text(status_msg_text, parse_mode='Markdown')
         
-        # 3. Start Polling Job
-        context.job_queue.run_repeating(
-            poll_status_job, 
-            interval=5, 
-            first=2, 
-            data={
-                "task_id": task_id, 
-                "gen_id": gen_id,
-                "used_key": used_key,
-                "model_id": model_id,
-                "chat_id": chat_id, 
-                "msg_id": status_msg.message_id,
-                "prompt": prompt,
-                "user_id": user['id'],
-                "start_time": datetime.now()
-            },
-            name=f"poll_{task_id}"
-        )
+        task_data = {
+            "user_id": user["id"],
+            "prompt": prompt,
+            "status": "pending",  # Worker will pick this up
+            "source": "telegram",
+            "thumbnail_url": image_url,
+            "telegram_chat_id": str(chat_id),
+            "model_name": model_id if model_id else "kling-v1",
+            "aspect_ratio": "16:9",
+            "options": {"duration": duration},
+            "created_at": "now()"
+        }
         
+        supabase.table("generations").insert(task_data).execute()
+        
+        # We stop here. The Queue Worker will pick it up and trigger polling.
         return ConversationHandler.END
 
     except Exception as e:
-        logger.error(f"Generate Error: {e}")
+        logger.error(f"Queue Error: {e}")
         await status_msg.edit_text(f"❌ Error: {str(e)}")
         return ConversationHandler.END
 
@@ -319,6 +317,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 if __name__ == "__main__":
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Start Queue Worker Background Task
+    loop = asyncio.get_event_loop()
+    loop.create_task(worker_loop(application))
     
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
