@@ -28,13 +28,15 @@ MODEL_ENDPOINTS = {
     'minimax-hailuo-2-3-1080p': {'endpoint': '/image-to-video/minimax-hailuo-2-3-1080p', 'param': 'duration'},
     'runway-gen4-turbo': {'endpoint': '/image-to-video/runway-gen4-turbo', 'param': 'duration', 'requiresHttps': True},
     'pixverse-v5-720p': {'endpoint': '/image-to-video/pixverse-v5', 'param': 'duration', 'requiresHttps': True},
-    'seedance-pro-720p': {'endpoint': '/video/seedance-1-5-pro-720p', 'param': 'duration'},
+    'seedance-1-5-pro-720p': {'endpoint': '/video/seedance-1-5-pro-720p', 'param': 'duration'},
     'seedance-pro-1080p': {'endpoint': '/video/seedance-1-5-pro-1080p', 'param': 'duration'},
     'seedance-lite-720p': {'endpoint': '/video/seedance-1-5-lite-720p', 'param': 'duration'},
     'seedance-lite-1080p': {'endpoint': '/video/seedance-1-5-lite-1080p', 'param': 'duration'},
     'kling-v1-6-pro': {'endpoint': '/image-to-video/kling-pro', 'param': 'duration'},
+    'kling-v1-6-pro': {'endpoint': '/image-to-video/kling-pro', 'param': 'duration'},
     'kling-v1-6-std': {'endpoint': '/image-to-video/kling-std', 'param': 'duration'},
-}
+    'kling-v2-6-motion-control-pro': {'endpoint': '/video/kling-v2-6-motion-control-pro', 'param': 'options'},
+    'kling-v2-6-motion-control-std': {'endpoint': '/video/kling-v2-6-motion-control-std', 'param': 'options'},
 
 MODEL_STATUS_ENDPOINTS = {
     'kling-v2-1-std': '/image-to-video/kling-v2-1',
@@ -51,6 +53,7 @@ MODEL_STATUS_ENDPOINTS = {
     'minimax-hailuo-2-3-1080p': '/image-to-video/minimax-hailuo-2-3-1080p',
     'runway-gen4-turbo': '/image-to-video/runway-gen4-turbo',
     'pixverse-v5-720p': '/image-to-video/pixverse-v5',
+    'seedance-1-5-pro-720p': '/video/seedance-1-5-pro-720p',
     'seedance-pro-720p': '/video/seedance-1-5-pro-720p',
     'seedance-pro-1080p': '/video/seedance-1-5-pro-1080p',
     'seedance-lite-720p': '/video/seedance-1-5-lite-720p',
@@ -242,12 +245,13 @@ def finalize_generation(generation_id, video_url, user_id, r2_url=None):
     # Increment count
     supabase.rpc("increment_video_count", {"user_id": user_id}).execute()
 
-def submit_freepik_task(user, model_id, prompt, image_url, duration="5"):
+def submit_freepik_task(user, model_id, prompt, image_url, duration="5", options=None):
     """
     Submits a task to Freepik API using available keys.
     Returns: (task_id, used_key) or raises Exception.
     Does NOT handle DB logging or credit consumption.
     """
+    options = options or {}
     # Ensure model_name is lowercase
     model_id = model_id.lower()
     
@@ -255,12 +259,50 @@ def submit_freepik_task(user, model_id, prompt, image_url, duration="5"):
     if not model_config: raise Exception(f"Model {model_id} not found")
 
     # Prepare Payload
-    payload = {"image": image_url, "prompt": prompt}
-    if "wan" in model_id: payload["size"] = "1280*720"
-    if model_config.get('param') == 'duration': payload["duration"] = str(duration)
-    
-    if "pixverse" in model_id:
-        payload = {"image_url": image_url, "prompt": prompt, "resolution": "720p", "duration": int(duration)}
+    if 'motion-control' in model_id:
+        # Specific payload for Motion Control
+        payload = {
+            "image_url": image_url,
+            "video_url": options.get('driving_url') or options.get('video_url'),
+            "prompt": prompt,
+            "character_orientation": options.get('character_orientation', 'video'),
+            "cfg_scale": float(options.get('cfg_scale', 0.5))
+        }
+    elif 'seedance' in model_id:
+        # Seedance Aspect Ratio Mapping
+        ratio_map = {
+            '16:9': 'widescreen_16_9',
+            '9:16': 'social_story_9_16',
+            '1:1': 'square_1_1',
+            '4:3': 'classic_4_3', 
+            '3:4': 'traditional_3_4',
+            '21:9': 'film_horizontal_21_9',
+            '9:21': 'film_vertical_9_21'
+        }
+        
+        ar = options.get('aspect_ratio', '16:9')
+        mapped_ar = ratio_map.get(ar, 'widescreen_16_9')
+        
+        payload = {
+            "image": image_url,
+            "prompt": prompt,
+            "duration": int(duration), # Spec says integer
+            "aspect_ratio": mapped_ar,
+            "generate_audio": True
+        }
+    else:
+        # Standard payload
+        payload = {"image": image_url, "prompt": prompt}
+        if "wan" in model_id: payload["size"] = "1280*720"
+        if model_config.get('param') == 'duration': payload["duration"] = str(duration)
+        
+        if "pixverse" in model_id:
+            payload = {"image_url": image_url, "prompt": prompt, "resolution": "720p", "duration": int(duration)}
+            
+        # Add generic options if available
+        if options.get('negative_prompt'): payload['negative_prompt'] = options['negative_prompt']
+        if options.get('cfg_scale'): payload['cfg_scale'] = float(options['cfg_scale'])
+        if options.get('aspect_ratio'): payload['aspect_ratio'] = options['aspect_ratio']
 
     # Get Keys
     keys = get_api_keys_for_user(user)

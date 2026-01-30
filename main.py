@@ -27,6 +27,7 @@ from supabase import create_client, Client
 from r2_helper import R2Helper
 from generation_helper import poll_status, finalize_generation
 from queue_worker import worker_loop
+from scripts.bot_cooldown_logic import check_cooldown, update_user_cooldown
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -180,8 +181,9 @@ async def handle_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             if not user.get('custom_api_key'):
                 await status_msg.edit_text(
                     "💎 **Welcome Ultra User!**\n\n"
-                    "Untuk melanjutkan, silakan masukkan **API Key Freepik** Anda.\n"
-                    "Ini diperlukan untuk akses Unlimited Anda.",
+                    "🔑 Anda belum memasukkan **API Key Freepik**.\n"
+                    "API Key wajib untuk melanjutkan akses BYOK (Bring Your Own Key).\n\n"
+                    "Silakan ketik API Key Anda:",
                     parse_mode='Markdown'
                 )
                 return API_KEY_INPUT
@@ -257,7 +259,7 @@ async def show_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, use
 
     keyboard = [
         [InlineKeyboardButton("🎬 Buat Video Baru", callback_data="menu_create")],
-        [InlineKeyboardButton("💳 Cek Kuota", callback_data="menu_check_quota"), 
+        [InlineKeyboardButton("💎 Cek Saldo", callback_data="menu_check_balance"), 
          InlineKeyboardButton("❓ Bantuan", callback_data="menu_help")],
         [InlineKeyboardButton("🔴 Keluar dari Bot", callback_data="menu_logout")]
     ]
@@ -299,12 +301,27 @@ async def dashboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return DASHBOARD
             
-        # Build Model Grid
+        # Build Model Grid with Dynamic Pricing
         buttons = []
+        user_type = user.get('type', 'try').lower()
         for m in models:
-            label = f"{m['display_name']}"
-            if user['type'] == 'pro' and m.get('cost_pro'):
-                label += f" ({m['cost_pro']} Cr)"
+            # Strict DB Pricing with Legacy Fallback
+            # If cost_pro_5s is missing, try cost_pro, then credit_cost (legacy default from existing dashboard)
+            base_cost = m.get('credit_cost') or 0
+            cost_5s = m.get('cost_pro_5s') or m.get('cost_pro') or base_cost or 0
+            cost_10s = m.get('cost_pro_10s') or m.get('cost_pro') or (base_cost * 2) or 0
+            is_free_5s = m.get('is_free_pro_5s', False)
+            
+            # Format: [🎬 Kling 2.1 🪙 4 - 8 Cr] or [🎬 Kling 2.1 🪙 Gratis - 10 Cr]
+            if user_type == 'pro':
+                if is_free_5s:
+                     label = f"🎬 {m['display_name']} 🪙 Gratis - {cost_10s} Cr"
+                else:
+                     label = f"🎬 {m['display_name']} 🪙 {cost_5s} - {cost_10s} Cr"
+            else:
+                # Ultra/Unlimited users - show model name only
+                label = f"🎬 {m['display_name']}"
+            
             buttons.append(InlineKeyboardButton(label, callback_data=f"model_{m['model_id']}"))
             
         footer = [InlineKeyboardButton("⬅️ Kembali", callback_data="back_to_dash")]
@@ -317,9 +334,34 @@ async def dashboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return SELECTING_MODEL
         
-    elif data == "menu_check_quota":
-        # Just refresh dashboard
-        return await show_dashboard(update, context, user)
+    elif data == "menu_check_balance":
+        # Show balance details
+        credits = user.get('credits', 0)
+        tier = user.get('type', 'Unknown').upper()
+        
+        balance_text = (
+            f"💎 **Cek Saldo**\n"
+            f"─────────────────\n"
+            f"📊 **Tier:** {tier}\n"
+        )
+        
+        if tier == 'PRO':
+            balance_text += f"🪙 **Saldo Kredit:** {credits} Cr\n"
+        elif tier in ['ULTRA', 'UNLIMITED']:
+            balance_text += f"♾️ **Akses:** Unlimited\n"
+        else:
+            balance_text += f"🪙 **Kredit:** {credits} Cr\n"
+        
+        balance_text += "─────────────────"
+        
+        await query.edit_message_text(
+            balance_text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Kembali", callback_data="back_to_dash")]
+            ]),
+            parse_mode='Markdown'
+        )
+        return DASHBOARD
         
     elif data == "back_to_dash":
         return await show_dashboard(update, context, user)
@@ -356,20 +398,47 @@ async def select_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return await show_dashboard(update, context, user)
     
     model_id = data.replace("model_", "")
-    # Retrieve full model info for context
-    # (Optimized: we could cache this, but for now we fetch or just store ID)
     context.user_data['selected_model_id'] = model_id
     
-    # 5s and 10s default
-    buttons = [
-        InlineKeyboardButton("⏱ 5 Detik", callback_data="dur_5"),
-        InlineKeyboardButton("⏱ 10 Detik", callback_data="dur_10"),
-    ]
+    # Fetch model info for dynamic pricing
+    chat_id = query.message.chat.id
+    user = get_user(chat_id)
+    user_type = user.get('type', 'try').lower() if user else 'try'
+    
+    try:
+        model_res = supabase.table("ai_models").select("*").eq("model_id", model_id).execute()
+        model_info = model_res.data[0] if model_res.data else {}
+        context.user_data['selected_model_info'] = model_info
+    except:
+        model_info = {}
+        context.user_data['selected_model_info'] = {}
+    
+    # Get pricing from DB
+    cost_5s = model_info.get('cost_pro_5s', model_info.get('cost_pro', 0)) or 0
+    cost_10s = model_info.get('cost_pro_10s', model_info.get('cost_pro', 0)) or 0
+    is_free_5s = model_info.get('is_free_pro_5s', False) or user_type in ['ultra', 'unlimited']
+    is_unlimited = user_type in ['ultra', 'unlimited']
+    
+    # Build duration buttons with dynamic labels
+    buttons = []
+    if is_unlimited:
+        # Ultra/Unlimited - no credit display
+        buttons.append(InlineKeyboardButton("⏱️ 5 Detik", callback_data="dur_5"))
+        buttons.append(InlineKeyboardButton("⏱️ 10 Detik", callback_data="dur_10"))
+    else:
+        # Pro users - show pricing
+        if is_free_5s:
+            buttons.append(InlineKeyboardButton("⏱️ 5 Detik (Gratis)", callback_data="dur_5"))
+        else:
+            buttons.append(InlineKeyboardButton(f"⏱️ 5 Detik (🪙 {cost_5s} Credit)", callback_data="dur_5"))
+        buttons.append(InlineKeyboardButton(f"⏱️ 10 Detik (🪙 {cost_10s} Credit)", callback_data="dur_10"))
+    
     footer = [InlineKeyboardButton("⬅️ Kembali", callback_data="back_to_models")]
+    display_name = model_info.get('display_name', model_id)
     
     await query.edit_message_text(
-        f"⏱ **Pilih Durasi Video**\nModel: `{model_id}`",
-        reply_markup=build_menu(buttons, n_cols=2, footer_buttons=footer),
+        f"⏱️ **Pilih Durasi Video**\nModel: `{display_name}`",
+        reply_markup=build_menu(buttons, n_cols=1, footer_buttons=footer),
         parse_mode='Markdown'
     )
     return SELECTING_DURATION
@@ -399,28 +468,40 @@ async def select_duration_callback(update: Update, context: ContextTypes.DEFAULT
     user = get_user(chat_id)
     model_id = context.user_data.get('selected_model_id')
     
-    # --- Cost Logic for PRO ---
-    # Need to fetch model cost details again to be sure
-    # Or assume defaults. Request says "Jika model tidak free atau durasi > limit"
-    # Let's fetch model details
+    # Strict DB Pricing - No Hardcoded Defaults
+    # Fetch FRESH model info to ensure real-time sync with Admin Dashboard
     try:
         m_res = supabase.table("ai_models").select("*").eq("model_id", model_id).execute()
         model_info = m_res.data[0]
     except:
         await query.edit_message_text("❌ Error fetching model info.")
         return DASHBOARD
+
+    user_type = user.get('type', 'try').lower()
+    is_free_5s = model_info.get('is_free_pro_5s', False)
     
-    is_paid_model = int(model_info.get('cost_pro') or 0) > 0
-    duration_limit = int(model_info.get('free_duration_limit') or 5) # default 5s free?
+    # Pricing with Fallback
+    base_cost = model_info.get('credit_cost') or 0
+    cost_5s = int(model_info.get('cost_pro_5s') or model_info.get('cost_pro') or base_cost or 0)
+    cost_10s = int(model_info.get('cost_pro_10s') or model_info.get('cost_pro') or (base_cost * 2) or 0)
     
-    # Condition: Pro User AND (Paid Model OR Duration > Limit)
-    if user['type'] == 'pro' and (is_paid_model or int(duration) > duration_limit):
-        cost = int(model_info.get('cost_pro') or 10) # Default 10 if not set
-        context.user_data['calculated_cost'] = cost
-        
+    # Determine cost based on selected duration
+    if duration == '5':
+        cost = 0 if is_free_5s else cost_5s
+    else:  # 10 seconds or others
+        cost = cost_10s
+    
+    context.user_data['calculated_cost'] = cost
+    
+    # Skip confirmation if cost is 0 (Free) or Unlimited User
+    if user_type in ['ultra', 'unlimited'] or cost == 0:
+        return await ask_aspect_ratio(query, context)
+    
+    # Condition: Pro User AND cost > 0
+    if user_type == 'pro' and cost > 0:
         text = (
             f"⚠️ **Konfirmasi Kredit**\n\n"
-            f"Model ini memerlukan **{cost} Kredit**.\n"
+            f"Durasi **{duration} detik** memerlukan **{cost} Kredit**.\n"
             f"Sisa Kredit Anda: **{user.get('credits', 0)}**\n\n"
             f"Lanjutkan?"
         )
@@ -428,7 +509,11 @@ async def select_duration_callback(update: Update, context: ContextTypes.DEFAULT
             InlineKeyboardButton("✅ Setuju", callback_data="confirm_yes"),
             InlineKeyboardButton("❌ Batal", callback_data="confirm_no")
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([buttons]), parse_mode='Markdown')
+        try:
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([buttons]), parse_mode='Markdown')
+        except:
+             # Fallback if message content same (though unlikely with dynamic cost)
+             pass
         return CONFIRM_CREDIT
 
     # Proceed to Ratio Selection
@@ -541,10 +626,54 @@ async def handle_ratio_selection(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process Media and Prompt, Create Task."""
-    user = get_user(update.effective_chat.id)
+    chat_id = update.effective_chat.id
+    user = get_user(chat_id)
+    
     if not user:
         await update.message.reply_text("Session Expired. /start")
         return ConversationHandler.END
+
+    # ====== LOCK PRO CHECK (Anti-Spam) ======
+    user_type = user.get('type', 'try').lower()
+    model_id = context.user_data.get('selected_model_id')
+
+    # ====== COOLDOWN CHECK ======
+    if user_type in ['pro', 'unlimited', 'ultra']:
+        is_allowed, msg = await check_cooldown(
+            supabase_client=supabase,
+            user_id=user['id'],
+            user_type=user_type,
+            model_name=model_id
+        )
+
+        if not is_allowed:
+            await update.message.reply_text(msg, parse_mode='Markdown')
+            return await show_dashboard(update, context, user)
+    # ====== END COOLDOWN CHECK ======
+
+    # ====== LOCK PRO CHECK (Anti-Spam) ======
+    if user_type == 'pro':
+        # Check for active processing tasks
+        try:
+            processing_res = supabase.table("generations") \
+                .select("id", count="exact") \
+                .eq("user_id", user['id']) \
+                .eq("status", "processing") \
+                .execute()
+            
+            processing_count = processing_res.count if processing_res.count else 0
+            
+            if processing_count > 0:
+                await update.message.reply_text(
+                    "⏳ **Tunggu dulu bosque!**\n\n"
+                    "Masih ada video yang sedang diproses.\n"
+                    "Tunggu sampai video selesai dibuat ya! 🎬",
+                    parse_mode='Markdown'
+                )
+                return await show_dashboard(update, context, user)
+        except Exception as e:
+            logger.warning(f"Lock Pro check failed: {e}")
+    # ====== END LOCK PRO ======
 
     if not update.message.photo:
         await update.message.reply_text("⚠️ Harap kirimkan format **Foto**.")
@@ -599,7 +728,8 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             "aspect_ratio": ratio,
             "options": {
                 "duration": duration, 
-                "msg_id": msg.message_id 
+                "msg_id": msg.message_id,
+                "credits_used": context.user_data.get('calculated_cost', 0)
             },
             "created_at": "now()"
         }
@@ -607,6 +737,9 @@ async def handle_media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Attempt Insert into generations
         supabase.table("generations").insert(gen_data).execute()
         logger.info(f"[TELEGRAM] Task inserted into generations for user {user['id']} (Model: {model_id})")
+
+        # Update Cooldown Count
+        await update_user_cooldown(supabase, user['id'], model_id)
         
         # Update message to "Queued" state, this message will be picked up by worker
         await msg.edit_text(
@@ -658,12 +791,51 @@ async def poll_status_job(context: ContextTypes.DEFAULT_TYPE):
             
             final_url = r2_video_url or video_url
             
-            # Send Final Video
+            # ====== POST-GENERATE SUMMARY ======
+            # Fetch credits_used from generation record and updated user balance
+            credits_used = d.get("credits_used", 0)
+            try:
+                updated_user = supabase.table("users").select("credits, type").eq("id", d["user_id"]).execute()
+                if updated_user.data:
+                    new_credits = updated_user.data[0].get('credits', 0)
+                    user_type = updated_user.data[0].get('type', '').lower()
+                else:
+                    new_credits = 0
+                    user_type = ''
+            except:
+                new_credits = 0
+                user_type = ''
+            
+            # Build caption with cost summary
+            caption = (
+                f"🎬 **Video UniverseAI**\n"
+                f"Model: `{d['model_id']}`\n"
+                f"Prompt: \"{d['prompt'][:50]}{'...' if len(d['prompt']) > 50 else ''}\"\n\n"
+                f"─────────────────\n"
+            )
+            
+            if user_type in ['ultra', 'unlimited']:
+                caption += f"💰 **Biaya:** Gratis (Unlimited)\n"
+            else:
+                caption += f"💰 **Biaya:** {credits_used} 🪙\n"
+                caption += f"💎 **Sisa Saldo:** {new_credits} 🪙\n"
+            
+            caption += "─────────────────"
+            
+            # Build buttons for post-generate actions
+            post_buttons = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎬 Buat Video Lagi", callback_data="menu_create")],
+                [InlineKeyboardButton("📥 Download File", callback_data=f"dl_{d['gen_id']}")]
+            ])
+            # ====== END POST-GENERATE ======
+            
+            # Send Final Video with Summary
             await context.bot.send_video(
                 chat_id=d["chat_id"], 
                 video=final_url, 
-                caption=f"🎬 **Video UniverseAI**\nModel: `{d['model_id']}`\nPrompt: \"{d['prompt']}\"",
-                parse_mode='Markdown'
+                caption=caption,
+                parse_mode='Markdown',
+                reply_markup=post_buttons
             )
             job.schedule_removal()
             return

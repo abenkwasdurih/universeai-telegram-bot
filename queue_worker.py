@@ -160,17 +160,38 @@ async def worker_loop(application):
             try:
                 # Get Price from DB to check Credits
                 try:
-                    price_res = supabase.table("ai_models").select("credit_cost").eq("model_id", model_id).execute()
+                    price_res = supabase.table("ai_models").select("*").eq("model_id", model_id).execute()
                 except Exception as e:
                     logger.error(f"[WORKER] Database error fetching model cost: {e}")
                     price_res = None
                 
-                
                 if not price_res.data:
-                    logger.error(f"[WORKER] Model ID '{model_id}' not found in ai_models table! Using default cost=1.")
-                    credit_cost = 1
+                    logger.error(f"[WORKER] Model ID '{model_id}' not found in ai_models table! Using default cost=0.")
+                    credit_cost = 0
                 else:
-                    credit_cost = price_res.data[0].get('credit_cost', 1)
+                    m_data = price_res.data[0]
+                    # Determine cost based on duration in task options
+                    # Default duration is 5 if not specified
+                    task_options_temp = task.get('options') or task.get('metadata') or task.get('task_metadata') or {}
+                    if isinstance(task_options_temp, str):
+                        try:
+                            task_options_temp = json.loads(task_options_temp)
+                        except:
+                            task_options_temp = {}
+                    
+                    duration = str(task_options_temp.get('duration', '5'))
+                    
+                    is_free_5s = m_data.get('is_free_pro_5s', False)
+                    base_cost = m_data.get('credit_cost') or 0
+                    
+                    # Pricing logic with fallback: Try specific -> Try Pro -> Try Base/Legacy
+                    cost_5s = int(m_data.get('cost_pro_5s') or m_data.get('cost_pro') or base_cost or 0)
+                    cost_10s = int(m_data.get('cost_pro_10s') or m_data.get('cost_pro') or (base_cost * 2) or 0)
+                    
+                    if duration == '5':
+                         credit_cost = 0 if is_free_5s else cost_5s
+                    else:
+                         credit_cost = cost_10s
 
                 if user.get('type') not in ['UNLIMITED', 'ADVANCE']:
                     if not consume_credits(user['id'], credit_cost):
@@ -224,13 +245,24 @@ async def worker_loop(application):
                     prompt = task.get('prompt')
                     duration = str(task.get('duration', '5')) # Default '5'
                     
+                    task_options = task.get('options') or task.get('metadata') or task.get('task_metadata') or {}
+                    if isinstance(task_options, str):
+                        except:
+                            task_options = {}
+
+                    # Ensure aspect_ratio is passed
+                    if task.get('aspect_ratio'):
+                        task_options['aspect_ratio'] = task.get('aspect_ratio')
+
+
                     # Submit
                     api_task_id, used_key = submit_freepik_task(
                         user=user,
                         model_id=model_id,
                         prompt=prompt,
                         image_url=img_url,
-                        duration=duration
+                        duration=duration,
+                        options=task_options
                     )
                 except Exception as api_e:
                     logger.error(f"[WORKER] API Submission Failed for {task['id']}: {api_e}")
@@ -295,7 +327,8 @@ async def worker_loop(application):
                                     "msg_id": msg_id, 
                                     "prompt": task['prompt'],
                                     "user_id": user['id'],
-                                    "start_time": datetime.now()
+                                    "start_time": datetime.now(),
+                                    "credits_used": task.get('options', {}).get('credits_used', credit_cost)
                                 },
                                 name=f"poll_{api_task_id}"
                             )
