@@ -37,6 +37,7 @@ MODEL_ENDPOINTS = {
     'kling-v1-6-std': {'endpoint': '/image-to-video/kling-std', 'param': 'duration'},
     'kling-v2-6-motion-control-pro': {'endpoint': '/video/kling-v2-6-motion-control-pro', 'param': 'options'},
     'kling-v2-6-motion-control-std': {'endpoint': '/video/kling-v2-6-motion-control-std', 'param': 'options'},
+}
 
 MODEL_STATUS_ENDPOINTS = {
     'kling-v2-1-std': '/image-to-video/kling-v2-1',
