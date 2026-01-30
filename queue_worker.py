@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 import os
+import json
 from dotenv import load_dotenv
 from generation_helper import submit_freepik_task, consume_credits
 
@@ -247,6 +248,8 @@ async def worker_loop(application):
                     
                     task_options = task.get('options') or task.get('metadata') or task.get('task_metadata') or {}
                     if isinstance(task_options, str):
+                        try:
+                            task_options = json.loads(task_options)
                         except:
                             task_options = {}
 
